@@ -1,98 +1,124 @@
+#!/usr/bin/env python3
+"""Генерация SQL-скрипта db_init.sql для создания и заполнения БД."""
+
 import csv
 import os
 import re
+import sys
 
-def escape_sql(s):
-    if s is None:
-        return 'NULL'
-    return "'" + str(s).replace("'", "''") + "'"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SQL_FILE = os.path.join(BASE_DIR, "db_init.sql")
 
-def parse_movie_title(title_str):
-    match = re.search(r'\((\d{4})\)\s*$', title_str)
-    if match:
-        year = int(match.group(1))
-        title = title_str[:match.start()].strip()
-        return title, year
-    return title_str, None
+
+def esc(value: str) -> str:
+    return str(value).replace("'", "''")
+
+
+def parse_title_year(raw_title: str):
+    m = re.match(r"^(.*?)\s*\((\d{4})\)\s*$", raw_title)
+    if m:
+        return m.group(1).strip(), int(m.group(2))
+    return raw_title.strip(), None
+
 
 def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    dataset_dir = os.path.join(script_dir, '..', 'dataset')
-    output_file = os.path.join(script_dir, 'db_init.sql')
+    with open(SQL_FILE, "w", encoding="utf-8") as out:
+        out.write("PRAGMA foreign_keys = OFF;\n")
+        out.write("BEGIN TRANSACTION;\n\n")
 
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write("DROP TABLE IF EXISTS movies;\n")
-        f.write("DROP TABLE IF EXISTS ratings;\n")
-        f.write("DROP TABLE IF EXISTS tags;\n")
-        f.write("DROP TABLE IF EXISTS users;\n\n")
+        for t in ("tags", "ratings", "movies", "users"):
+            out.write(f"DROP TABLE IF EXISTS {t};\n")
+        out.write("\n")
 
-        f.write("""CREATE TABLE movies (
-    id INTEGER PRIMARY KEY,
-    title TEXT,
-    year INTEGER,
-    genres TEXT
-);
-
-CREATE TABLE ratings (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER,
-    movie_id INTEGER,
-    rating REAL,
-    timestamp INTEGER
-);
-
-CREATE TABLE tags (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER,
-    movie_id INTEGER,
-    tag TEXT,
-    timestamp INTEGER
-);
-
-CREATE TABLE users (
+        out.write("""CREATE TABLE users (
     id INTEGER PRIMARY KEY,
     name TEXT,
     email TEXT,
     gender TEXT,
     register_date TEXT,
     occupation TEXT
-);\n\n""")
+);
+""")
+        out.write("""CREATE TABLE movies (
+    id INTEGER PRIMARY KEY,
+    title TEXT,
+    year INTEGER,
+    genres TEXT
+);
+""")
+        out.write("""CREATE TABLE ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    movie_id INTEGER,
+    rating REAL,
+    timestamp INTEGER
+);
+""")
+        out.write("""CREATE TABLE tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    movie_id INTEGER,
+    tag TEXT,
+    timestamp INTEGER
+);
+""")
+        out.write("\n")
 
-        with open(os.path.join(dataset_dir, 'movies.csv'), 'r', encoding='utf-8') as mf:
-            reader = csv.reader(mf)
-            next(reader)
+        users_path = os.path.join(BASE_DIR, "users.txt")
+        with open(users_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("|")
+                if len(parts) < 6:
+                    continue
+                uid, name, email, gender, reg, occ = parts[:6]
+                out.write(
+                    f"INSERT INTO users VALUES "
+                    f"({int(uid)}, '{esc(name)}', '{esc(email)}', "
+                    f"'{esc(gender)}', '{esc(reg)}', '{esc(occ)}');\n"
+                )
+        out.write("\n")
+
+        movies_path = os.path.join(BASE_DIR, "movies.csv")
+        with open(movies_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
             for row in reader:
-                mid, title_raw, genres = row
-                title, year = parse_movie_title(title_raw)
-                year_val = str(year) if year else 'NULL'
-                f.write(f"INSERT INTO movies VALUES ({mid}, {escape_sql(title)}, {year_val}, {escape_sql(genres)});\n")
+                mid = int(row["movieId"])
+                title, year = parse_title_year(row["title"])
+                year_sql = year if year is not None else "NULL"
+                out.write(
+                    f"INSERT INTO movies VALUES "
+                    f"({mid}, '{esc(title)}', {year_sql}, '{esc(row['genres'])}');\n"
+                )
+        out.write("\n")
 
-        with open(os.path.join(dataset_dir, 'ratings.csv'), 'r', encoding='utf-8') as rf:
-            reader = csv.reader(rf)
-            next(reader)
-            rid = 1
+        ratings_path = os.path.join(BASE_DIR, "ratings.csv")
+        with open(ratings_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
             for row in reader:
-                uid, mid, rating, ts = row
-                f.write(f"INSERT INTO ratings VALUES ({rid}, {uid}, {mid}, {rating}, {ts});\n")
-                rid += 1
+                out.write(
+                    f"INSERT INTO ratings (user_id, movie_id, rating, timestamp) "
+                    f"VALUES ({int(row['userId'])}, {int(row['movieId'])}, "
+                    f"{float(row['rating'])}, {int(row['timestamp'])});\n"
+                )
+        out.write("\n")
 
-        with open(os.path.join(dataset_dir, 'tags.csv'), 'r', encoding='utf-8') as tf:
-            reader = csv.reader(tf)
-            next(reader)
-            tid = 1
+        tags_path = os.path.join(BASE_DIR, "tags.csv")
+        with open(tags_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
             for row in reader:
-                uid, mid, tag, ts = row
-                f.write(f"INSERT INTO tags VALUES ({tid}, {uid}, {mid}, {escape_sql(tag)}, {ts});\n")
-                tid += 1
+                out.write(
+                    f"INSERT INTO tags (user_id, movie_id, tag, timestamp) "
+                    f"VALUES ({int(row['userId'])}, {int(row['movieId'])}, "
+                    f"'{esc(row['tag'])}', {int(row['timestamp'])});\n"
+                )
 
-        with open(os.path.join(dataset_dir, 'users.txt'), 'r', encoding='utf-8') as uf:
-            for line in uf:
-                parts = line.strip().split('|')
-                if len(parts) == 6:
-                    uid, name, email, gender, reg_date, occ = parts
-                    f.write(f"INSERT INTO users VALUES ({uid}, {escape_sql(name)}, {escape_sql(email)}, {escape_sql(gender)}, {escape_sql(reg_date)}, {escape_sql(occ)});\n")
+        out.write("\nCOMMIT;\n")
 
-    print(f"SQL-скрипт успешно сгенерирован: {output_file}")
+    print(f"[OK] Generated {SQL_FILE}", file=sys.stderr)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
